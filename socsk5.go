@@ -13,11 +13,17 @@ type socksAddr struct {
 	addr  []byte
 }
 
+const (
+	kSocksAddrIPV4   = 1
+	kSocksAddrIPV6   = 4
+	kSocksAddrDomain = 3
+)
+
 func (sa socksAddr) String() string {
 	switch sa.atype {
-	case 1, 4:
+	case kSocksAddrIPV4, kSocksAddrIPV6:
 		return net.IP(sa.addr).String()
-	case 3:
+	case kSocksAddrDomain:
 		return string(sa.addr)
 	default:
 		panic("bad atype")
@@ -26,17 +32,17 @@ func (sa socksAddr) String() string {
 
 func serializeSocksAddr(sa socksAddr, port uint16) (buf []byte) {
 	switch sa.atype {
-	case 1:
+	case kSocksAddrIPV4:
 		if len(sa.addr) != 4 {
 			panic("bad socksAddr")
 		}
 		buf = make([]byte, 1+4+2)
-	case 4:
+	case kSocksAddrIPV6:
 		if len(sa.addr) != 16 {
 			panic("bad socksAddr")
 		}
 		buf = make([]byte, 1+16+2)
-	case 3:
+	case kSocksAddrDomain:
 		if len(sa.addr) > 256 {
 			panic("bad socksAddr")
 		}
@@ -61,11 +67,11 @@ func parseSocksAddr(reader io.Reader) (sa socksAddr, port uint16, err error) {
 	// addr
 	sa.atype = atype[0]
 	switch sa.atype {
-	case 1:
+	case kSocksAddrIPV4:
 		sa.addr = make([]byte, 4)
-	case 4:
+	case kSocksAddrIPV6:
 		sa.addr = make([]byte, 16)
-	case 3:
+	case kSocksAddrDomain:
 		var alen [1]byte
 		_, err = io.ReadFull(reader, alen[:])
 		if err != nil {

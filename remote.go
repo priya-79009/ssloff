@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"github.com/account-login/ctxlog"
 	"github.com/pkg/errors"
 	"io"
 	"net"
 	"sync"
+	"time"
 )
 
 type Remote struct {
@@ -132,7 +134,7 @@ func (l *localState) localReader(ctx context.Context) {
 			ctxlog.Debugf(ctx, "[cid:%v][cmd:%v][data_len:%v]", ev.cid, ev.cmd, len(ev.data))
 
 			switch ev.cmd {
-			case kClientInputConnect:
+			case kClientInputConnect, kClientInputConnectSSL:
 				err := func() error {
 					// parse dst addr
 					addrReader := bytes.NewReader(ev.data)
@@ -153,7 +155,7 @@ func (l *localState) localReader(ctx context.Context) {
 					}
 
 					if l.targetStates[ev.cid] != nil {
-						return fmt.Errorf("[CLIENT_BUG] [cid:%v] exists", ev.cid)
+						return fmt.Errorf("[LOCAL_BUG] [cid:%v] exists", ev.cid)
 					}
 
 					l.targetStates[ev.cid] = &targetState{
@@ -168,7 +170,7 @@ func (l *localState) localReader(ctx context.Context) {
 						writerDone:  make(chan struct{}),
 					}
 
-					go l.targetStates[ev.cid].targetInitializer(ctx, dstAddr, dstPort)
+					go l.targetStates[ev.cid].targetInitializer(ctx, ev.cmd, dstAddr, dstPort)
 
 					return nil
 				}()
@@ -263,15 +265,26 @@ func (l *localState) localClose(ctx context.Context) {
 	}
 }
 
-func (t *targetState) targetInitializer(ctx context.Context, dstAddr socksAddr, dstPort uint16) {
+func (t *targetState) targetInitializer(
+	ctx context.Context, cmd uint32, dstAddr socksAddr, dstPort uint16) {
+
 	// dial
 	addrStr := fmt.Sprintf("%s:%d", dstAddr, dstPort)
 	ctx = ctxlog.Pushf(ctx, "[cid:%v][target:%s]", t.id, addrStr)
-	conn, err := net.Dial("tcp", addrStr)
+	conn, err := net.DialTimeout("tcp", addrStr, 5*time.Second) // TODO: config
 	if err != nil {
 		ctxlog.Errorf(ctx, "target dial: %v", err)
 		t.local.writerInput <- protoMsg{cmd: kClientClose, cid: t.id}
 		return
+	}
+
+	// tls
+	if cmd == kClientInputConnectSSL {
+		if dstAddr.atype != kSocksAddrDomain {
+			ctxlog.Errorf(ctx, "[LOCAL_BUG] kClientInputConnectSSL requires ServerName")
+			t.local.writerInput <- protoMsg{cmd: kClientClose, cid: t.id}
+		}
+		conn = tls.Client(conn, &tls.Config{ServerName: string(dstAddr.addr)})
 	}
 
 	// connected

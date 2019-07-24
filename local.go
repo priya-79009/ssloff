@@ -3,6 +3,7 @@ package ssloff
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"github.com/account-login/ctxlog"
 	"io"
 	"net"
@@ -12,12 +13,9 @@ import (
 )
 
 type clientState struct {
-	id      uint32
-	conn    net.Conn
-	reader  io.Reader
-	dstAddr socksAddr
-	dstPort uint16
-	remote  *remoteState
+	id     uint32
+	conn   net.Conn
+	remote *remoteState
 	// reader
 	readerExit chan protoMsg
 	readerDone chan struct{}
@@ -46,6 +44,7 @@ type Local struct {
 	// params
 	RemoteAddr string
 	LocalAddr  string
+	MITM       *MITM
 	// *remoteState
 	rstate atomic.Value
 }
@@ -97,11 +96,43 @@ func (l *Local) clientInitializer(ctx context.Context, conn net.Conn) {
 	// read socks5 req
 	// TODO: io deadline
 	reader := bufio.NewReaderSize(conn, kReaderBuf)
-	rw := readerWriter{reader, conn}
-	dstAddr, dstPort, err := socks5handshake(rw)
+	dstAddr, dstPort, err := socks5handshake(readerWriter{reader, conn})
 	if err != nil {
 		ctxlog.Errorf(ctx, "%v", err)
 		return
+	}
+
+	// detect ssl
+	var tlsConn *tls.Conn
+	// consume buffered data
+	peekData := make([]byte, reader.Buffered())
+	_, _ = reader.Read(peekData)
+	if dstPort == 443 {
+		// read more data
+		if len(peekData) == 0 {
+			peekData = make([]byte, kReaderBuf)
+			n, err := conn.Read(peekData)
+			if err != nil {
+				ctxlog.Errorf(ctx, "peek for ssl handshake: %v", err)
+				return
+			}
+
+			peekData = peekData[:n]
+		}
+
+		if host, ok := detectTLS(peekData); ok {
+			// setup peekedConn
+			ctxlog.Infof(ctx, "got tls [host:%v]", host)
+			bottom := peekedConn{peeked: peekData, conn: conn}
+			peekData = nil
+			// create tls conn
+			tlsConn = tls.Server(&bottom, l.MITM.TLSForHost(ctx, host))
+			// fix dstAddr to hostname
+			if dstAddr.atype != kSocksAddrDomain {
+				ctxlog.Infof(ctx, "fix [dst:%v] to [host:%v]", dstAddr, host)
+				dstAddr = socksAddr{atype: kSocksAddrDomain, addr: []byte(host)}
+			}
+		}
 	}
 
 	// create client
@@ -110,14 +141,34 @@ func (l *Local) clientInitializer(ctx context.Context, conn net.Conn) {
 		ctxlog.Errorf(ctx, "can not create clientState")
 		return
 	}
-	client.conn = conn
-	client.reader = reader
-	client.dstAddr = dstAddr
-	client.dstPort = dstPort
 
 	// log
 	ctx = ctxlog.Pushf(ctx, "[client][id:%v][target:%v:%v]", client.id, dstAddr, dstPort)
 	ctxlog.Debugf(ctx, "created clientState")
+
+	// setup client
+	if tlsConn != nil {
+		client.conn = tlsConn
+	} else {
+		client.conn = conn
+	}
+
+	// connect cmd
+	var cmd uint32 = kClientInputConnect
+	if tlsConn != nil {
+		cmd = kClientInputConnectSSL
+	}
+	client.remote.writerInput <- protoMsg{
+		cmd: cmd, cid: client.id, data: serializeSocksAddr(dstAddr, dstPort),
+	}
+
+	// peeked data
+	if len(peekData) > 0 {
+		ctxlog.Debugf(ctx, "client reader got %v bytes from peekData", len(peekData))
+		client.remote.writerInput <- protoMsg{
+			cmd: kClientInputUp, cid: client.id, data: peekData,
+		}
+	}
 
 	// start client io
 	go client.clientReader(ctx)
@@ -135,13 +186,7 @@ func (l *Local) clientInitializer(ctx context.Context, conn net.Conn) {
 func (client *clientState) clientReader(ctx context.Context) {
 	defer close(client.readerDone)
 
-	client.remote.writerInput <- protoMsg{
-		cmd: kClientInputConnect, cid: client.id,
-		data: serializeSocksAddr(client.dstAddr, client.dstPort),
-	}
-
-	// TODO: replace client.reader with client.conn
-	ioInput, ioQuit := reader2chan(client.reader)
+	ioInput, ioQuit := reader2chan(client.conn)
 	defer close(ioQuit)
 	for {
 		select {
@@ -323,8 +368,8 @@ func (r *remoteState) remoteWriter(ctx context.Context) {
 			switch ev.cmd {
 			case kClientClose:
 				msg = protoMsg{cmd: kClientClose, cid: ev.cid}
-			case kClientInputConnect:
-				msg = protoMsg{cmd: kClientInputConnect, cid: ev.cid, data: ev.data}
+			case kClientInputConnect, kClientInputConnectSSL:
+				msg = protoMsg{cmd: ev.cmd, cid: ev.cid, data: ev.data}
 			case kClientInputUp:
 				if len(ev.data) > kMsgRecvMaxLen {
 					panic("ensure this")

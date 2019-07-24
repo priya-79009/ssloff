@@ -19,11 +19,19 @@ func main() {
 	ctx := context.Background()
 
 	// args
-	local := ssloff.Local{}
+	local := ssloff.Local{
+		MITM: &ssloff.MITM{},
+	}
 	flag.StringVar(&local.LocalAddr, "local", "127.0.0.1:1180", "listen on this address")
 	flag.StringVar(&local.RemoteAddr, "remote", "127.0.0.1:2180", "connect to remote")
+	flag.StringVar(&local.MITM.CAPath, "ca", "ca.pem", "path to CA")
 	debugServerPtr := flag.String("debug", "", "debug server addr")
 	flag.Parse()
+
+	if err := local.MITM.Init(); err != nil {
+		ctxlog.Fatal(ctx, err)
+		return
+	}
 
 	if *debugServerPtr != "" {
 		_ = ssloff.StartDebugServer(ctx, *debugServerPtr)
