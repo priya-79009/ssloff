@@ -101,36 +101,96 @@ func parseSocksAddr(reader io.Reader) (sa socksAddr, port uint16, err error) {
 	return
 }
 
-func socks5handshake(conn io.ReadWriter) (
-	dstAddr socksAddr, dstPort uint16, err error) {
-	// auth
+const kSocks4IdMax = 255
+
+func socks4readid(conn io.ReadWriter) (id string, err error) {
+	var b [1]byte
+	for i := 0; i <= kSocks4IdMax; i++ {
+		if _, err = io.ReadFull(conn, b[:]); err != nil {
+			err = errors.Wrapf(err, "socks4 read id")
+			return
+		}
+
+		if b[0] == 0 {
+			return
+		}
+		id += string(b[:])
+	}
+
+	err = errors.New("socks4 id too long")
+	return
+}
+
+func socks4sub(conn io.ReadWriter) (dstAddr socksAddr, dstPort uint16, err error) {
+	var a6 [6]byte
+	if _, err = io.ReadFull(conn, a6[:]); err != nil {
+		err = errors.Wrapf(err, "socks4 read req")
+		return
+	}
+
+	// port
+	dstPort = binary.BigEndian.Uint16(a6[:2])
+
+	// user id
+	if _, err = socks4readid(conn); err != nil {
+		return
+	}
+
+	if a6[2] == 0 && a6[3] == 0 && a6[4] == 0 {
+		// socks4a
+		var domain string
+		if domain, err = socks4readid(conn); err != nil {
+			return
+		}
+
+		dstAddr.atype = kSocksAddrDomain
+		dstAddr.addr = []byte(domain)
+	} else {
+		dstAddr.atype = kSocksAddrIPV4
+		dstAddr.addr = make([]byte, 4)
+		copy(dstAddr.addr, a6[2:6])
+	}
+
+	// reply
+	if _, err = conn.Write([]byte{0, 0x5a, 1, 2, 1, 2, 3, 4}); err != nil {
+		err = errors.Wrap(err, "socks4 write reply")
+		return
+	}
+
+	return
+}
+
+func socks5handshake(conn io.ReadWriter) (dstAddr socksAddr, dstPort uint16, err error) {
+	// auth or socks4 header
 	var h2 [2]byte
-	_, err = io.ReadFull(conn, h2[:])
-	if err != nil {
+	if _, err = io.ReadFull(conn, h2[:]); err != nil {
 		err = errors.Wrap(err, "socks5 read method num")
 		return
 	}
+
+	// detect socks4
+	if h2[0] == 4 && h2[1] == 1 {
+		return socks4sub(conn)
+	}
+
 	if h2[0] != 5 {
 		err = fmt.Errorf("socks5 [ver:%v] != 5", h2[0])
 		return
 	}
-	_, err = io.ReadFull(conn, make([]byte, h2[1]))
-	if err != nil {
+	if _, err = io.ReadFull(conn, make([]byte, h2[1])); err != nil {
 		err = errors.Wrap(err, "socks5 read methods")
 		return
 	}
 
 	// reply auth
-	_, err = conn.Write([]byte{5, 0})
-	if err != nil {
+	if _, err = conn.Write([]byte{5, 0}); err != nil {
 		err = errors.Wrap(err, "socks5 write method")
 		return
 	}
 
 	// req
 	var h3 [3]byte
-	_, err = io.ReadFull(conn, h3[:])
-	if err != nil {
+	if _, err = io.ReadFull(conn, h3[:]); err != nil {
 		err = errors.Wrap(err, "socks5 read h3")
 		return
 	}
@@ -145,8 +205,7 @@ func socks5handshake(conn io.ReadWriter) (
 	}
 
 	// reply connect req
-	_, err = conn.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
-	if err != nil {
+	if _, err = conn.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
 		err = errors.Wrap(err, "socks5 write reply")
 		return
 	}
