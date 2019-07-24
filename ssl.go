@@ -89,7 +89,7 @@ type MITM struct {
 func (m *MITM) Init() error {
 	// create CA if not exists
 	if _, err := os.Stat(m.CAPath); os.IsNotExist(err) {
-		validity := 292 * 365 * 24 * time.Hour
+		validity := 20 * 365 * 24 * time.Hour
 		cert, privkey, err := mitm.NewAuthority("ssloff", "ssloff", validity)
 		if err != nil {
 			return err

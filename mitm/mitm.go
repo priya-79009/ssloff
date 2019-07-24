@@ -144,7 +144,7 @@ func NewConfig(ca *x509.Certificate, privateKey interface{}) (*Config, error) {
 		capriv:   privateKey,
 		priv:     priv,
 		keyID:    keyID,
-		validity: time.Hour,
+		validity: 20 * 365 * 24 * time.Hour,
 		org:      "ssloff",
 		certs:    make(map[string]*tls.Certificate),
 		roots:    roots,
