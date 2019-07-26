@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"github.com/account-login/ctxlog"
 	"github.com/pkg/errors"
@@ -34,10 +35,22 @@ type localState struct {
 	quiting      bool
 }
 
+type targetMetric struct {
+	Id         uint32
+	Target     string
+	Created    int64
+	Connected  int64
+	FirstWrite int64
+	FirstRead  int64
+	LastRead   int64
+	Closed     int64
+}
+
 type targetState struct {
-	id    uint32
-	conn  net.Conn
-	local *localState
+	id     uint32
+	conn   net.Conn
+	local  *localState
+	metric targetMetric
 	// reader
 	readerExit chan protoMsg
 	readerDone chan struct{}
@@ -147,30 +160,8 @@ func (l *localState) localReader(ctx context.Context) {
 					}
 
 					// create target
-					l.mu.Lock()
-					defer l.mu.Unlock()
-
-					if l.quiting {
-						return fmt.Errorf("local is quiting")
-					}
-
-					if l.targetStates[ev.cid] != nil {
-						return fmt.Errorf("[LOCAL_BUG] [cid:%v] exists", ev.cid)
-					}
-
-					l.targetStates[ev.cid] = &targetState{
-						id:    ev.cid,
-						local: l,
-						// reader
-						readerExit: make(chan protoMsg, 4),
-						readerDone: make(chan struct{}),
-						// writer
-						writerInput: make(chan protoMsg, kChannelSize),
-						writerExit:  make(chan protoMsg, 4),
-						writerDone:  make(chan struct{}),
-					}
-
-					go l.targetStates[ev.cid].targetInitializer(ctx, ev.cmd, dstAddr, dstPort)
+					t := l.targetNew(ctx, ev.cid)
+					go t.targetInitializer(ctx, ev.cmd, dstAddr, dstPort)
 
 					return nil
 				}()
@@ -265,11 +256,46 @@ func (l *localState) localClose(ctx context.Context) {
 	}
 }
 
+func (l *localState) targetNew(ctx context.Context, cid uint32) *targetState {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.quiting {
+		ctxlog.Warnf(ctx, "can not create target: local is quiting")
+		return nil
+	}
+
+	if l.targetStates[cid] != nil {
+		ctxlog.Errorf(ctx, "[LOCAL_BUG] [cid:%v] exists", cid)
+		return nil
+	}
+
+	l.targetStates[cid] = &targetState{
+		id:    cid,
+		local: l,
+		// reader
+		readerExit: make(chan protoMsg, 4),
+		readerDone: make(chan struct{}),
+		// writer
+		writerInput: make(chan protoMsg, kChannelSize),
+		writerExit:  make(chan protoMsg, 4),
+		writerDone:  make(chan struct{}),
+	}
+	return l.targetStates[cid]
+}
+
 func (t *targetState) targetInitializer(
 	ctx context.Context, cmd uint32, dstAddr socksAddr, dstPort uint16) {
 
-	// dial
+	defer t.targetClose(ctx)
+
+	// metric
 	addrStr := fmt.Sprintf("%s:%d", dstAddr, dstPort)
+	t.metric.Id = t.id
+	t.metric.Target = addrStr
+	t.metric.Created = time.Now().UnixNano() / 1000
+
+	// dial
 	ctx = ctxlog.Pushf(ctx, "[cid:%v][target:%s]", t.id, addrStr)
 	conn, err := net.DialTimeout("tcp", addrStr, 5*time.Second) // TODO: config
 	if err != nil {
@@ -277,18 +303,21 @@ func (t *targetState) targetInitializer(
 		t.local.writerInput <- protoMsg{cmd: kClientClose, cid: t.id}
 		return
 	}
+	t.metric.Connected = time.Now().UnixNano() / 1000
+	defer safeClose(ctx, conn)
 
 	// tls
 	if cmd == kClientInputConnectSSL {
 		if dstAddr.atype != kSocksAddrDomain {
 			ctxlog.Errorf(ctx, "[LOCAL_BUG] kClientInputConnectSSL requires ServerName")
 			t.local.writerInput <- protoMsg{cmd: kClientClose, cid: t.id}
+			return
 		}
 		conn = tls.Client(conn, &tls.Config{ServerName: string(dstAddr.addr)})
+		// NOTE: will not call tls.Conn.Close
 	}
 
 	// connected
-	defer safeClose(ctx, conn)
 	ctxlog.Infof(ctx, "target connected")
 	t.conn = conn
 
@@ -299,9 +328,6 @@ func (t *targetState) targetInitializer(
 	// wait for target done
 	<-t.readerDone
 	<-t.writerDone
-
-	// clear target state
-	t.targetClose(ctx)
 	ctxlog.Infof(ctx, "target done")
 }
 
@@ -326,6 +352,12 @@ func (t *targetState) targetReader(ctx context.Context) {
 				t.writerExit <- protoMsg{cmd: kClientClose, cid: t.id}
 				return
 			}
+
+			// metric
+			if t.metric.FirstRead == 0 {
+				t.metric.FirstRead = time.Now().UnixNano() / 1000
+			}
+			t.metric.LastRead = time.Now().UnixNano() / 1000
 
 			// send data to local
 			data := ev.([]byte)
@@ -354,6 +386,11 @@ func (t *targetState) targetWriter(ctx context.Context) {
 			var err error
 			switch ev.cmd {
 			case kClientInputUp:
+				ctxlog.Debugf(ctx, "target writer got %v bytes", len(ev.data))
+				if t.metric.FirstWrite == 0 {
+					t.metric.FirstWrite = time.Now().UnixNano() / 1000
+				}
+
 				_, err = t.conn.Write(ev.data)
 			case kClientInputUpEOF:
 				err = t.conn.(interface{ CloseWrite() error }).CloseWrite() // assume tcp
@@ -383,6 +420,12 @@ func (t *targetState) targetWriter(ctx context.Context) {
 }
 
 func (t *targetState) targetClose(ctx context.Context) {
+	// metric
+	t.metric.Closed = time.Now().UnixNano() / 1000
+	if metric, err := json.Marshal(t.metric); err == nil {
+		ctxlog.Debugf(context.Background(), "METRIC %s", string(metric))
+	}
+
 	// erase from remote map
 	t.local.mu.Lock()
 	defer t.local.mu.Unlock()

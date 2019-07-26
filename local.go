@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/json"
+	"fmt"
 	"github.com/account-login/ctxlog"
 	"io"
 	"net"
@@ -12,10 +14,21 @@ import (
 	"time"
 )
 
+type clientMetric struct {
+	Id         uint32
+	Target     string
+	Accepted   int64
+	FirstRead  int64
+	FirstWrite int64
+	LastWrite  int64
+	Closed     int64
+}
+
 type clientState struct {
 	id     uint32
 	conn   net.Conn
 	remote *remoteState
+	metric clientMetric
 	// reader
 	readerExit chan protoMsg
 	readerDone chan struct{}
@@ -84,6 +97,7 @@ func (l *Local) clientAcceptor(ctx context.Context, listener net.Listener) {
 func (l *Local) clientInitializer(ctx context.Context, conn net.Conn) {
 	defer safeClose(ctx, conn)
 
+	acceptedUs := time.Now().UnixNano() / 1000
 	ctxlog.Infof(ctx, "accepted")
 
 	// get remote state
@@ -152,6 +166,9 @@ func (l *Local) clientInitializer(ctx context.Context, conn net.Conn) {
 	} else {
 		client.conn = conn
 	}
+	client.metric.Id = client.id
+	client.metric.Target = fmt.Sprintf("%s:%d", dstAddr, dstPort)
+	client.metric.Accepted = acceptedUs
 
 	// connect cmd
 	var cmd uint32 = kClientInputConnect
@@ -168,6 +185,7 @@ func (l *Local) clientInitializer(ctx context.Context, conn net.Conn) {
 		client.remote.writerInput <- protoMsg{
 			cmd: kClientInputUp, cid: client.id, data: peekData,
 		}
+		client.metric.FirstRead = time.Now().UnixNano() / 1000
 	}
 
 	// start client io
@@ -206,6 +224,11 @@ func (client *clientState) clientReader(ctx context.Context) {
 				return
 			}
 
+			// metric
+			if client.metric.FirstRead == 0 {
+				client.metric.FirstRead = time.Now().UnixNano() / 1000
+			}
+
 			// send data to remote
 			data := ev.([]byte)
 			if len(data) > kMsgRecvMaxLen {
@@ -233,6 +256,12 @@ func (client *clientState) clientWriter(ctx context.Context) {
 			var err error
 			switch ev.cmd {
 			case kRemoteInputDown:
+				ctxlog.Debugf(ctx, "client writer got %v bytes", len(ev.data))
+				if client.metric.FirstWrite == 0 {
+					client.metric.FirstWrite = time.Now().UnixNano() / 1000
+				}
+				client.metric.LastWrite = time.Now().UnixNano() / 1000
+
 				_, err = client.conn.Write(ev.data)
 			case kRemoteInputDownEOF:
 				err = client.conn.(interface{ CloseWrite() error }).CloseWrite() // assume tcp
@@ -263,6 +292,12 @@ func (client *clientState) clientWriter(ctx context.Context) {
 }
 
 func (client *clientState) clientClose(ctx context.Context) {
+	// metric
+	client.metric.Closed = time.Now().UnixNano() / 1000
+	if metric, err := json.Marshal(client.metric); err == nil {
+		ctxlog.Debugf(context.Background(), "METRIC %s", string(metric))
+	}
+
 	// erase from remote map
 	client.remote.mu.Lock()
 	defer client.remote.mu.Unlock()

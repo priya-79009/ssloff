@@ -1,6 +1,5 @@
 package ssloff
 
-
 // connect: cid dst
 // tlsstart: cid dst
 // up: cid data
@@ -142,4 +141,3 @@ target_writer:
 		exit
 
 */
-
