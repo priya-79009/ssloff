@@ -29,9 +29,11 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"golang.org/x/net/publicsuffix"
 	"math/big"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -214,6 +216,20 @@ func (c *Config) TLSForHost(ctx context.Context, hostname string) *tls.Config {
 	}
 }
 
+func hostWildBase(host string) string {
+	tld, icann := publicsuffix.PublicSuffix(host)
+	if !icann {
+		return ""
+	}
+
+	headBody := host[0 : len(host)-len(tld)-1]
+	if i := strings.IndexByte(headBody, '.'); i > 0 {
+		return host[i+1:]
+	}
+
+	return ""
+}
+
 // TODO: cache dir
 func (c *Config) cert(ctx context.Context, hostname string) (*tls.Certificate, error) {
 	// Remove the port if it exists.
@@ -222,8 +238,16 @@ func (c *Config) cert(ctx context.Context, hostname string) (*tls.Certificate, e
 		hostname = host
 	}
 
+	// wildcard
+	subjectName := hostname
+	key := hostname
+	if wildBase := hostWildBase(hostname); wildBase != "" {
+		subjectName = "*." + wildBase
+		key = subjectName[1:]
+	}
+
 	c.certmu.RLock()
-	tlsc, ok := c.certs[hostname]
+	tlsc, ok := c.certs[key]
 	c.certmu.RUnlock()
 
 	if ok {
@@ -251,7 +275,7 @@ func (c *Config) cert(ctx context.Context, hostname string) (*tls.Certificate, e
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
-			CommonName:   hostname,
+			CommonName:   subjectName,
 			Organization: []string{c.org},
 		},
 		SubjectKeyId:          c.keyID,
@@ -265,7 +289,7 @@ func (c *Config) cert(ctx context.Context, hostname string) (*tls.Certificate, e
 	if ip := net.ParseIP(hostname); ip != nil {
 		tmpl.IPAddresses = []net.IP{ip}
 	} else {
-		tmpl.DNSNames = []string{hostname}
+		tmpl.DNSNames = []string{subjectName}
 	}
 
 	raw, err := x509.CreateCertificate(rand.Reader, tmpl, c.ca, c.priv.Public(), c.capriv)
@@ -286,7 +310,7 @@ func (c *Config) cert(ctx context.Context, hostname string) (*tls.Certificate, e
 	}
 
 	c.certmu.Lock()
-	c.certs[hostname] = tlsc
+	c.certs[key] = tlsc
 	c.certmu.Unlock()
 
 	return tlsc, nil
