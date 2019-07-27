@@ -15,13 +15,15 @@ import (
 )
 
 type clientMetric struct {
-	Id         uint32
-	Target     string
-	Accepted   int64
-	FirstRead  int64
-	FirstWrite int64
-	LastWrite  int64
-	Closed     int64
+	Id           uint32
+	Target       string
+	Accepted     int64
+	FirstRead    int64
+	FirstWrite   int64
+	LastWrite    int64
+	Closed       int64
+	BytesRead    int
+	BytesWritten int
 }
 
 type clientState struct {
@@ -186,6 +188,7 @@ func (l *Local) clientInitializer(ctx context.Context, conn net.Conn) {
 			cmd: kClientInputUp, cid: client.id, data: peekData,
 		}
 		client.metric.FirstRead = time.Now().UnixNano() / 1000
+		client.metric.BytesRead += len(peekData)
 	}
 
 	// start client io
@@ -224,16 +227,18 @@ func (client *clientState) clientReader(ctx context.Context) {
 				return
 			}
 
-			// metric
-			if client.metric.FirstRead == 0 {
-				client.metric.FirstRead = time.Now().UnixNano() / 1000
-			}
-
-			// send data to remote
 			data := ev.([]byte)
 			if len(data) > kMsgRecvMaxLen {
 				panic("ensure this")
 			}
+
+			// metric
+			if client.metric.FirstRead == 0 {
+				client.metric.FirstRead = time.Now().UnixNano() / 1000
+			}
+			client.metric.BytesRead += len(data)
+
+			// send data to remote
 			ctxlog.Debugf(ctx, "client reader got %v bytes", len(data))
 			client.remote.writerInput <- protoMsg{cmd: kClientInputUp, cid: client.id, data: data}
 		case ev := <-client.readerExit:
@@ -261,6 +266,7 @@ func (client *clientState) clientWriter(ctx context.Context) {
 					client.metric.FirstWrite = time.Now().UnixNano() / 1000
 				}
 				client.metric.LastWrite = time.Now().UnixNano() / 1000
+				client.metric.BytesWritten += len(ev.data)
 
 				_, err = client.conn.Write(ev.data)
 			case kRemoteInputDownEOF:

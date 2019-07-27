@@ -36,14 +36,16 @@ type localState struct {
 }
 
 type targetMetric struct {
-	Id         uint32
-	Target     string
-	Created    int64
-	Connected  int64
-	FirstWrite int64
-	FirstRead  int64
-	LastRead   int64
-	Closed     int64
+	Id           uint32
+	Target       string
+	Created      int64
+	Connected    int64
+	FirstWrite   int64
+	FirstRead    int64
+	LastRead     int64
+	Closed       int64
+	BytesRead    int
+	BytesWritten int
 }
 
 type targetState struct {
@@ -353,17 +355,19 @@ func (t *targetState) targetReader(ctx context.Context) {
 				return
 			}
 
+			data := ev.([]byte)
+			if len(data) > kMsgRecvMaxLen {
+				panic("ensure this")
+			}
+
 			// metric
 			if t.metric.FirstRead == 0 {
 				t.metric.FirstRead = time.Now().UnixNano() / 1000
 			}
 			t.metric.LastRead = time.Now().UnixNano() / 1000
+			t.metric.BytesRead += len(data)
 
 			// send data to local
-			data := ev.([]byte)
-			if len(data) > kMsgRecvMaxLen {
-				panic("ensure this")
-			}
 			ctxlog.Debugf(ctx, "target reader got %v bytes", len(data))
 			t.local.writerInput <- protoMsg{cmd: kRemoteInputDown, cid: t.id, data: data}
 		case ev := <-t.readerExit:
@@ -390,6 +394,7 @@ func (t *targetState) targetWriter(ctx context.Context) {
 				if t.metric.FirstWrite == 0 {
 					t.metric.FirstWrite = time.Now().UnixNano() / 1000
 				}
+				t.metric.BytesWritten += len(ev.data)
 
 				_, err = t.conn.Write(ev.data)
 			case kClientInputUpEOF:
