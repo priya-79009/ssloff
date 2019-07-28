@@ -138,6 +138,7 @@ func (m *MITM) Init() error {
 	if err != nil {
 		return err
 	}
+	m.Config.SetCacheDir(m.CacheDir)
 
 	return nil
 }

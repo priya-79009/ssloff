@@ -28,11 +28,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"golang.org/x/net/publicsuffix"
+	"io/ioutil"
 	"math/big"
 	"net"
 	"net/http"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -58,6 +61,7 @@ type Config struct {
 	roots                  *x509.CertPool
 	skipVerify             bool
 	handshakeErrorCallback func(*http.Request, error)
+	cacheDir               string
 
 	certmu sync.RWMutex
 	certs  map[string]*tls.Certificate
@@ -125,10 +129,11 @@ func NewConfig(ca *x509.Certificate, privateKey interface{}) (*Config, error) {
 	roots := x509.NewCertPool()
 	roots.AddCert(ca)
 
-	priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return nil, err
-	}
+	//priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	//if err != nil {
+	//	return nil, err
+	//}
+	priv := privateKey.(*rsa.PrivateKey) // (ab)use ca key for cert key
 	pub := priv.Public()
 
 	// Subject Key Identifier support for end entity certificate.
@@ -151,6 +156,10 @@ func NewConfig(ca *x509.Certificate, privateKey interface{}) (*Config, error) {
 		certs:    make(map[string]*tls.Certificate),
 		roots:    roots,
 	}, nil
+}
+
+func (c *Config) SetCacheDir(dir string) {
+	c.cacheDir = dir
 }
 
 // SetValidity sets the validity window around the current time that the
@@ -230,7 +239,66 @@ func hostWildBase(host string) string {
 	return ""
 }
 
-// TODO: cache dir
+func (c *Config) certFromFile(
+	ctx context.Context, key string, subjectName string) (*tls.Certificate, error) {
+
+	if c.cacheDir == "" {
+		// no file cache
+		return c.generateCert(ctx, subjectName)
+	}
+	filePath := path.Join(c.cacheDir, key)
+
+	miss := func() (*tls.Certificate, error) {
+		// generate cert
+		tlsc, err := c.generateCert(ctx, subjectName)
+		if err != nil {
+			return nil, err
+		}
+		// write cache
+		pemData := pem.EncodeToMemory(&pem.Block{
+			Type: "CERTIFICATE", Bytes: tlsc.Leaf.Raw,
+		})
+		if err := ioutil.WriteFile(filePath, pemData, 0644); err != nil {
+			ctxlog.Errorf(ctx, "write file %s: %v", filePath, err)
+		}
+		// ok
+		return tlsc, nil
+	}
+
+	// read file
+	data, err := ioutil.ReadFile(filePath)
+	if err != nil {
+		ctxlog.Warnf(ctx, "read %s: %v", filePath, err)
+		return miss()
+	}
+
+	// decode cert
+	block, _ := pem.Decode(data)
+	if block == nil {
+		ctxlog.Errorf(ctx, "can not decode pem")
+		return miss()
+	}
+
+	x509c, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		ctxlog.Errorf(ctx, "parse cert: %v", err)
+		return miss()
+	}
+
+	tlsc := &tls.Certificate{
+		Certificate: [][]byte{x509c.Raw, c.ca.Raw},
+		PrivateKey:  c.priv,
+		Leaf:        x509c,
+	}
+
+	// TODO: verify duration
+	;
+
+	// hit
+	ctxlog.Debugf(ctx, "hit from file: %s", filePath)
+	return tlsc, nil
+}
+
 func (c *Config) cert(ctx context.Context, hostname string) (*tls.Certificate, error) {
 	// Remove the port if it exists.
 	host, _, err := net.SplitHostPort(hostname)
@@ -266,7 +334,18 @@ func (c *Config) cert(ctx context.Context, hostname string) (*tls.Certificate, e
 	}
 
 	ctxlog.Debugf(ctx, "mitm: cache miss for %s", hostname)
+	if tlsc, err = c.certFromFile(ctx, key, subjectName); err != nil {
+		return tlsc, err
+	}
 
+	c.certmu.Lock()
+	c.certs[key] = tlsc
+	c.certmu.Unlock()
+
+	return tlsc, nil
+}
+
+func (c *Config) generateCert(ctx context.Context, subjectName string) (*tls.Certificate, error) {
 	serial, err := rand.Int(rand.Reader, MaxSerialNumber)
 	if err != nil {
 		return nil, err
@@ -286,7 +365,7 @@ func (c *Config) cert(ctx context.Context, hostname string) (*tls.Certificate, e
 		NotAfter:              time.Now().Add(c.validity),
 	}
 
-	if ip := net.ParseIP(hostname); ip != nil {
+	if ip := net.ParseIP(subjectName); ip != nil {
 		tmpl.IPAddresses = []net.IP{ip}
 	} else {
 		tmpl.DNSNames = []string{subjectName}
@@ -303,15 +382,10 @@ func (c *Config) cert(ctx context.Context, hostname string) (*tls.Certificate, e
 		return nil, err
 	}
 
-	tlsc = &tls.Certificate{
+	tlsc := &tls.Certificate{
 		Certificate: [][]byte{raw, c.ca.Raw},
 		PrivateKey:  c.priv,
 		Leaf:        x509c,
 	}
-
-	c.certmu.Lock()
-	c.certs[key] = tlsc
-	c.certmu.Unlock()
-
 	return tlsc, nil
 }

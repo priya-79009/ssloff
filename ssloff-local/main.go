@@ -25,6 +25,7 @@ func main() {
 	flag.StringVar(&local.LocalAddr, "local", "127.0.0.1:1180", "listen on this address")
 	flag.StringVar(&local.RemoteAddr, "remote", "127.0.0.1:2180", "connect to remote")
 	flag.StringVar(&local.MITM.CAPath, "ca", "ca.pem", "path to CA")
+	flag.StringVar(&local.MITM.CacheDir, "cert-dir", "", "path to cert cache")
 	debugServerPtr := flag.String("debug", "", "debug server addr")
 	flag.Parse()
 
