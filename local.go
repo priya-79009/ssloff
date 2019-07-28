@@ -103,7 +103,10 @@ func (l *Local) clientInitializer(ctx context.Context, conn net.Conn) {
 	ctxlog.Infof(ctx, "accepted")
 
 	// get remote state
-	r := l.rstate.Load().(*remoteState)
+	var r *remoteState
+	if p := l.rstate.Load(); p != nil {
+		r = p.(*remoteState)
+	}
 	if r == nil {
 		ctxlog.Errorf(ctx, "remote not ready")
 		return
