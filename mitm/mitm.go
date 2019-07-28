@@ -239,64 +239,77 @@ func hostWildBase(host string) string {
 	return ""
 }
 
-func (c *Config) certFromFile(
+func (c *Config) certFromCache(
 	ctx context.Context, key string, subjectName string) (*tls.Certificate, error) {
 
-	if c.cacheDir == "" {
-		// no file cache
-		return c.generateCert(ctx, subjectName)
-	}
-	filePath := path.Join(c.cacheDir, key)
-
-	miss := func() (*tls.Certificate, error) {
-		// generate cert
-		tlsc, err := c.generateCert(ctx, subjectName)
-		if err != nil {
-			return nil, err
-		}
-		// write cache
-		pemData := pem.EncodeToMemory(&pem.Block{
-			Type: "CERTIFICATE", Bytes: tlsc.Leaf.Raw,
-		})
-		if err := ioutil.WriteFile(filePath, pemData, 0644); err != nil {
-			ctxlog.Errorf(ctx, "write file %s: %v", filePath, err)
-		}
-		// ok
+	// memory
+	c.certmu.RLock()
+	tlsc := c.certs[key]
+	c.certmu.RUnlock()
+	if tlsc != nil {
 		return tlsc, nil
 	}
+
+	// file
+	if c.cacheDir == "" {
+		return nil, errors.New("cache not enabled")
+	}
+	filePath := path.Join(c.cacheDir, key)
 
 	// read file
 	data, err := ioutil.ReadFile(filePath)
 	if err != nil {
-		ctxlog.Warnf(ctx, "read %s: %v", filePath, err)
-		return miss()
+		return nil, err
 	}
 
 	// decode cert
 	block, _ := pem.Decode(data)
 	if block == nil {
 		ctxlog.Errorf(ctx, "can not decode pem")
-		return miss()
+		return nil, errors.New("can not decode pem")
 	}
 
 	x509c, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
 		ctxlog.Errorf(ctx, "parse cert: %v", err)
-		return miss()
+		return nil, err
 	}
 
-	tlsc := &tls.Certificate{
+	tlsc = &tls.Certificate{
 		Certificate: [][]byte{x509c.Raw, c.ca.Raw},
 		PrivateKey:  c.priv,
 		Leaf:        x509c,
 	}
 
-	// TODO: verify duration
-	;
-
 	// hit
 	ctxlog.Debugf(ctx, "hit from file: %s", filePath)
+	c.certmu.Lock()
+	c.certs[key] = tlsc
+	c.certmu.Unlock()
 	return tlsc, nil
+}
+
+func (c *Config) certToCache(ctx context.Context, key string, tlsc *tls.Certificate) error {
+	// memory
+	c.certmu.Lock()
+	c.certs[key] = tlsc
+	c.certmu.Unlock()
+
+	// file
+	if c.cacheDir == "" {
+		return nil // no file cache
+	}
+	filePath := path.Join(c.cacheDir, key)
+	pemData := pem.EncodeToMemory(&pem.Block{
+		Type: "CERTIFICATE", Bytes: tlsc.Leaf.Raw,
+	})
+	if err := ioutil.WriteFile(filePath, pemData, 0644); err != nil {
+		ctxlog.Errorf(ctx, "write file %s: %v", filePath, err)
+		return err
+	}
+
+	// ok
+	return nil
 }
 
 func (c *Config) cert(ctx context.Context, hostname string) (*tls.Certificate, error) {
@@ -314,11 +327,8 @@ func (c *Config) cert(ctx context.Context, hostname string) (*tls.Certificate, e
 		key = subjectName[1:]
 	}
 
-	c.certmu.RLock()
-	tlsc, ok := c.certs[key]
-	c.certmu.RUnlock()
-
-	if ok {
+	tlsc, err := c.certFromCache(ctx, key, subjectName)
+	if err == nil {
 		ctxlog.Debugf(ctx, "mitm: cache hit for %s", hostname)
 
 		// Check validity of the certificate for hostname match, expiry, etc. In
@@ -334,13 +344,10 @@ func (c *Config) cert(ctx context.Context, hostname string) (*tls.Certificate, e
 	}
 
 	ctxlog.Debugf(ctx, "mitm: cache miss for %s", hostname)
-	if tlsc, err = c.certFromFile(ctx, key, subjectName); err != nil {
-		return tlsc, err
+	if tlsc, err = c.generateCert(ctx, subjectName); err != nil {
+		return nil, err
 	}
-
-	c.certmu.Lock()
-	c.certs[key] = tlsc
-	c.certmu.Unlock()
+	_ = c.certToCache(ctx, key, tlsc)
 
 	return tlsc, nil
 }
