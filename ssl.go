@@ -1,6 +1,8 @@
 package ssloff
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -94,6 +96,10 @@ func (m *MITM) Init() error {
 		if err != nil {
 			return err
 		}
+		sitekey, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			return err
+		}
 
 		certData := pem.EncodeToMemory(&pem.Block{
 			Type: "CERTIFICATE", Bytes: cert.Raw,
@@ -102,8 +108,12 @@ func (m *MITM) Init() error {
 			Type:  "RSA PRIVATE KEY",
 			Bytes: x509.MarshalPKCS1PrivateKey(privkey),
 		})
+		siteKeyData := pem.EncodeToMemory(&pem.Block{
+			Type:  "SITE RSA PRIVATE KEY",
+			Bytes: x509.MarshalPKCS1PrivateKey(sitekey),
+		})
 
-		merged := append(certData, keyData...)
+		merged := []byte(string(certData) + string(keyData) + string(siteKeyData))
 		if err = ioutil.WriteFile(m.CAPath, merged, 0600); err != nil {
 			return err
 		}
@@ -129,12 +139,16 @@ func (m *MITM) Init() error {
 	if err != nil {
 		return err
 	}
-	privkey, err := x509.ParsePKCS1PrivateKey(pemMap["RSA PRIVATE KEY"])
+	capriv, err := x509.ParsePKCS1PrivateKey(pemMap["RSA PRIVATE KEY"])
+	if err != nil {
+		return err
+	}
+	sitepriv, err := x509.ParsePKCS1PrivateKey(pemMap["SITE RSA PRIVATE KEY"])
 	if err != nil {
 		return err
 	}
 
-	m.Config, err = mitm.NewConfig(cert, privkey)
+	m.Config, err = mitm.NewConfig(cert, capriv, sitepriv)
 	if err != nil {
 		return err
 	}

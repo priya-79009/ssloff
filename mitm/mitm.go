@@ -126,15 +126,11 @@ func NewAuthority(name, organization string, validity time.Duration) (*x509.Cert
 
 // NewConfig creates a MITM config using the CA certificate and
 // private key to generate on-the-fly certificates.
-func NewConfig(ca *x509.Certificate, privateKey interface{}) (*Config, error) {
+func NewConfig(ca *x509.Certificate, capriv interface{}, sitepriv interface{}) (*Config, error) {
 	roots := x509.NewCertPool()
 	roots.AddCert(ca)
 
-	//priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	//if err != nil {
-	//	return nil, err
-	//}
-	priv := privateKey.(*rsa.PrivateKey) // (ab)use ca key for cert key
+	priv := sitepriv.(*rsa.PrivateKey)
 	pub := priv.Public()
 
 	// Subject Key Identifier support for end entity certificate.
@@ -149,7 +145,7 @@ func NewConfig(ca *x509.Certificate, privateKey interface{}) (*Config, error) {
 
 	return &Config{
 		ca:       ca,
-		capriv:   privateKey,
+		capriv:   capriv,
 		priv:     priv,
 		keyID:    keyID,
 		validity: 20 * 365 * 24 * time.Hour,
