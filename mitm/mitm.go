@@ -35,6 +35,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"os"
 	"path"
 	"strings"
 	"sync"
@@ -303,6 +304,7 @@ func (c *Config) certToCache(ctx context.Context, key string, tlsc *tls.Certific
 	pemData := pem.EncodeToMemory(&pem.Block{
 		Type: "CERTIFICATE", Bytes: tlsc.Leaf.Raw,
 	})
+	_ = os.MkdirAll(c.cacheDir, 0755)
 	if err := ioutil.WriteFile(filePath, pemData, 0644); err != nil {
 		ctxlog.Errorf(ctx, "write file %s: %v", filePath, err)
 		return err
