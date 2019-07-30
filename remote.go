@@ -18,9 +18,11 @@ import (
 type Remote struct {
 	// param
 	RemoteAddr string
+	IPv4Only   bool
 }
 
 type localState struct {
+	r    *Remote
 	conn net.Conn
 	// reader
 	readerExit chan protoMsg
@@ -98,6 +100,7 @@ func (r *Remote) localInitializer(ctx context.Context, conn net.Conn) {
 
 	// create localState
 	l := &localState{
+		r:            r,
 		conn:         conn,
 		readerExit:   make(chan protoMsg, 4),
 		readerDone:   make(chan struct{}),
@@ -299,7 +302,11 @@ func (t *targetState) targetInitializer(
 
 	// dial
 	ctx = ctxlog.Pushf(ctx, "[cid:%v][target:%s]", t.id, addrStr)
-	conn, err := net.DialTimeout("tcp", addrStr, 5*time.Second) // TODO: config
+	network := "tcp"
+	if t.local.r.IPv4Only {
+		network = "tcp4"
+	}
+	conn, err := net.DialTimeout(network, addrStr, 5*time.Second) // TODO: config
 	if err != nil {
 		ctxlog.Errorf(ctx, "target dial: %v", err)
 		t.local.writerInput <- protoMsg{cmd: kClientClose, cid: t.id}
