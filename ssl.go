@@ -66,10 +66,8 @@ var dummyError = errors.New("haha")
 func detectTLS(input []byte) (name string, ok bool) {
 	c := tls.Config{
 		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
-			if hello.ServerName != "" {
-				name = hello.ServerName
-				ok = true
-			}
+			name = hello.ServerName
+			ok = true
 			return nil, dummyError
 		},
 	}

@@ -295,6 +295,7 @@ func (t *targetState) targetInitializer(
 	defer t.targetClose(ctx)
 
 	// metric
+	// FIXME: ipv6
 	addrStr := fmt.Sprintf("%s:%d", dstAddr, dstPort)
 	t.metric.Id = t.id
 	t.metric.Target = addrStr

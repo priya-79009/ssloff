@@ -141,7 +141,12 @@ func (l *Local) clientInitializer(ctx context.Context, conn net.Conn) {
 
 		if host, ok := detectTLS(peekData); ok {
 			// setup peekedConn
-			ctxlog.Infof(ctx, "got tls [host:%v]", host)
+			if host == "" {
+				host = dstAddr.String()
+				ctxlog.Infof(ctx, "got tls without SNI [host:%v]", host)
+			} else {
+				ctxlog.Infof(ctx, "got tls SNI [host:%v]", host)
+			}
 			bottom := peekedConn{peeked: peekData, conn: conn}
 			peekData = nil
 			// create tls conn

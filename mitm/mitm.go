@@ -319,7 +319,7 @@ func (c *Config) cert(ctx context.Context, hostname string) (*tls.Certificate, e
 
 	// wildcard
 	subjectName := hostname
-	key := hostname
+	key := strings.Replace(hostname, ":", "-", -1) // replace for ipv6
 	if wildBase := hostWildBase(hostname); wildBase != "" {
 		subjectName = "*." + wildBase
 		key = subjectName[1:]
@@ -356,10 +356,16 @@ func (c *Config) generateCert(ctx context.Context, subjectName string) (*tls.Cer
 		return nil, err
 	}
 
+	commonName := subjectName
+	ip := net.ParseIP(subjectName)
+	if ip != nil {
+		commonName = strings.Replace(ip.String(), ":", "-", -1) + ".ip.ssloff"
+	}
+
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
-			CommonName:   subjectName,
+			CommonName:   commonName,
 			Organization: []string{c.org},
 		},
 		SubjectKeyId:          c.keyID,
@@ -370,10 +376,10 @@ func (c *Config) generateCert(ctx context.Context, subjectName string) (*tls.Cer
 		NotAfter:              time.Now().Add(c.validity),
 	}
 
-	if ip := net.ParseIP(subjectName); ip != nil {
+	if ip != nil {
 		tmpl.IPAddresses = []net.IP{ip}
 	} else {
-		tmpl.DNSNames = []string{subjectName}
+		tmpl.DNSNames = []string{commonName}
 	}
 
 	raw, err := x509.CreateCertificate(rand.Reader, tmpl, c.ca, c.priv.Public(), c.capriv)
