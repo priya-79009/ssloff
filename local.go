@@ -59,6 +59,7 @@ type Local struct {
 	// params
 	RemoteAddr string
 	LocalAddr  string
+	NoMITM     bool
 	MITM       *MITM
 	// *remoteState
 	rstate atomic.Value
@@ -126,7 +127,7 @@ func (l *Local) clientInitializer(ctx context.Context, conn net.Conn) {
 	// consume buffered data
 	peekData := make([]byte, reader.Buffered())
 	_, _ = reader.Read(peekData)
-	if dstPort == 443 {
+	if l.MITM != nil && dstPort == 443 {
 		// read more data
 		if len(peekData) == 0 {
 			peekData = make([]byte, kReaderBuf)
