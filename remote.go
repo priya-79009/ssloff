@@ -11,6 +11,7 @@ import (
 	"github.com/pkg/errors"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -18,7 +19,7 @@ import (
 type Remote struct {
 	// param
 	RemoteAddr string
-	IPv4Only   bool
+	PreferIPv4 bool
 }
 
 type localState struct {
@@ -289,25 +290,62 @@ func (l *localState) targetNew(ctx context.Context, cid uint32) *targetState {
 	return l.targetStates[cid]
 }
 
+func isIPv6(dstAddr socksAddr) bool {
+	switch dstAddr.atype {
+	case kSocksAddrIPV4:
+		return false
+	case kSocksAddrIPV6:
+		return true
+	case kSocksAddrDomain:
+		// firefox bug, ipv6 is domain addr
+		return strings.ContainsRune(string(dstAddr.addr), ':')
+		//ip := net.ParseIP(string(dstAddr.addr))
+		//return ip != nil && ip.To4() == nil
+	default:
+		panic("bad atype")
+	}
+}
+
+func socksAddrString(dstAddr socksAddr, dstPort uint16) string {
+	if isIPv6(dstAddr) {
+		return fmt.Sprintf("[%s]:%d", dstAddr, dstPort)
+	} else {
+		return fmt.Sprintf("%s:%d", dstAddr, dstPort)
+	}
+}
+
+func dial(ctx context.Context, addr string, preferV4 bool) (conn net.Conn, err error) {
+	d := &net.Dialer{Timeout: 2 * time.Second} // TODO: config
+	nets := []string{"tcp"}
+	if preferV4 {
+		nets = []string{"tcp4", "tcp"}
+	}
+	for _, network := range nets {
+		if conn, err = d.DialContext(ctx, network, addr); err == nil {
+			return
+		}
+		if len(nets) > 1 {
+			ctxlog.Debugf(ctx, "try dial %s: %v", network, err)
+		}
+	}
+	return
+}
+
 func (t *targetState) targetInitializer(
 	ctx context.Context, cmd uint32, dstAddr socksAddr, dstPort uint16) {
 
 	defer t.targetClose(ctx)
 
+	addr := socksAddrString(dstAddr, dstPort)
+
 	// metric
-	// FIXME: ipv6
-	addrStr := fmt.Sprintf("%s:%d", dstAddr, dstPort)
 	t.metric.Id = t.id
-	t.metric.Target = addrStr
+	t.metric.Target = addr
 	t.metric.Created = time.Now().UnixNano() / 1000
 
 	// dial
-	ctx = ctxlog.Pushf(ctx, "[cid:%v][target:%s]", t.id, addrStr)
-	network := "tcp"
-	if t.local.r.IPv4Only {
-		network = "tcp4"
-	}
-	conn, err := net.DialTimeout(network, addrStr, 5*time.Second) // TODO: config
+	ctx = ctxlog.Pushf(ctx, "[cid:%v][target:%s]", t.id, addr)
+	conn, err := dial(ctx, addr, t.local.r.PreferIPv4)
 	if err != nil {
 		ctxlog.Errorf(ctx, "target dial: %v", err)
 		t.local.writerInput <- protoMsg{cmd: kClientClose, cid: t.id}

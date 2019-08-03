@@ -151,10 +151,12 @@ func (l *Local) clientInitializer(ctx context.Context, conn net.Conn) {
 			peekData = nil
 			// create tls conn
 			tlsConn = tls.Server(&bottom, l.MITM.TLSForHost(ctx, host))
-			// fix dstAddr to hostname
+			// fix dstAddr to domain name if tls host is domain name
 			if dstAddr.atype != kSocksAddrDomain {
-				ctxlog.Infof(ctx, "fix [dst:%v] to [host:%v]", dstAddr, host)
-				dstAddr = socksAddr{atype: kSocksAddrDomain, addr: []byte(host)}
+				if net.ParseIP(host) == nil {
+					ctxlog.Infof(ctx, "fix [dst:%v] to [host:%v]", dstAddr, host)
+					dstAddr = socksAddr{atype: kSocksAddrDomain, addr: []byte(host)}
+				}
 			}
 		}
 	}

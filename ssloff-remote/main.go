@@ -21,7 +21,7 @@ func main() {
 	// args
 	remote := ssloff.Remote{}
 	flag.StringVar(&remote.RemoteAddr, "remote", "127.0.0.1:2180", "listen on this address")
-	flag.BoolVar(&remote.IPv4Only, "4", false, "ipv4 only")
+	flag.BoolVar(&remote.PreferIPv4, "4", false, "prefer ipv4")
 	debugServerPtr := flag.String("debug", "", "debug server addr")
 	flag.Parse()
 
