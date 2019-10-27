@@ -66,6 +66,9 @@ type Local struct {
 }
 
 func (l *Local) Start(ctx context.Context) error {
+	// init atomic.Value
+	l.rstate.Store((*remoteState)(nil))
+
 	// listen for client
 	listener, err := net.Listen("tcp", l.LocalAddr)
 	if err != nil {
@@ -104,10 +107,7 @@ func (l *Local) clientInitializer(ctx context.Context, conn net.Conn) {
 	ctxlog.Infof(ctx, "accepted")
 
 	// get remote state
-	var r *remoteState
-	if p := l.rstate.Load(); p != nil {
-		r = p.(*remoteState)
-	}
+	r := l.rstate.Load().(*remoteState)
 	if r == nil {
 		ctxlog.Errorf(ctx, "remote not ready")
 		return
