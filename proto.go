@@ -6,12 +6,13 @@ import (
 	"io"
 )
 
-// len  cmd  cid  xxxx
-// .... .... ....
+// len  cmd  cid  ack  xxxx
+// .... .... .... ....
 
 type protoMsg struct {
 	cmd  uint32
 	cid  uint32
+	ack  uint32
 	data []byte
 	// only used by protoParser
 	err error
@@ -22,10 +23,11 @@ func (msg *protoMsg) writeTo(w io.Writer) error {
 		panic("???")
 	}
 
-	var h [4 * 3]byte
+	var h [4 * 4]byte
 	binary.LittleEndian.PutUint32(h[0:4], uint32(len(msg.data)))
 	binary.LittleEndian.PutUint32(h[4:8], msg.cmd)
 	binary.LittleEndian.PutUint32(h[8:12], msg.cid)
+	binary.LittleEndian.PutUint32(h[12:16], msg.ack)
 	_, err := w.Write(h[:])
 	if err != nil {
 		return err
@@ -43,7 +45,7 @@ func protoParser(reader io.Reader) (result chan protoMsg, quit chan struct{}) {
 		var err error
 
 		for {
-			var h [3 * 4]byte
+			var h [4 * 4]byte
 			_, err = io.ReadFull(reader, h[:])
 			if err != nil {
 				break
@@ -64,6 +66,7 @@ func protoParser(reader io.Reader) (result chan protoMsg, quit chan struct{}) {
 			msg := protoMsg{
 				cmd:  binary.LittleEndian.Uint32(h[4:8]),
 				cid:  binary.LittleEndian.Uint32(h[8:12]),
+				ack:  binary.LittleEndian.Uint32(h[12:16]),
 				data: data,
 			}
 
