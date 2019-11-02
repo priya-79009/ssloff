@@ -1,6 +1,6 @@
 package ssloff
 
-const kChannelSize = 1024
+const kChannelSize = 1024 * 1024
 
 // msgType
 const (

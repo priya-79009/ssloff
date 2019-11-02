@@ -39,10 +39,11 @@ type clientState struct {
 	writerExit  chan protoMsg
 	writerDone  chan struct{}
 	// remote writer quene
-	mu    sync.Mutex
-	cond  sync.Cond
-	phead *protoMsg
-	ptail *protoMsg
+	mu      sync.Mutex
+	cond    sync.Cond
+	phead   *protoMsg
+	ptail   *protoMsg
+	exiting bool
 	// notified client queue, protected by remoteState.mu
 	cnext    *clientState
 	notified bool
@@ -244,10 +245,6 @@ func (client *clientState) remoteWriterEnqueue(ctx context.Context, proto *proto
 	client.mu.Lock()
 	defer client.mu.Unlock()
 
-	if proto.cmd == kClientInputUp && client.fc.state() == kFlowPause {
-		panic("???")
-	}
-
 	// enqueue
 	if client.phead == nil {
 		client.phead = proto
@@ -263,7 +260,7 @@ func (client *clientState) remoteWriterEnqueue(ctx context.Context, proto *proto
 	client.remoteNotify(false)
 
 	// block on kFlowPause
-	for client.fc.state() == kFlowPause {
+	for client.fc.state() == kFlowPause && client.exiting {
 		ctxlog.Debugf(ctx, "client paused [snt:%v][ack:%v] [inflight:%v] > [window:%v]",
 			client.fc.snt, client.fc.ack, client.fc.snt-client.fc.ack, client.fc.win)
 		client.cond.Wait()
@@ -371,7 +368,7 @@ func (client *clientState) clientWriter(ctx context.Context) {
 			if err != nil {
 				ctxlog.Errorf(ctx, "client writer exit with io error: %v", err)
 				msg := protoMsg{cmd: kClientClose, cid: client.id}
-				client.readerExit <- msg
+				client.clientReaderExit(&msg)
 				client.remoteWriterEnqueue(ctx, &msg)
 				return
 			}
@@ -396,7 +393,7 @@ func (client *clientState) clientWriter(ctx context.Context) {
 					client.remoteNotify(false)
 				}
 				client.mu.Unlock()
-				ctxlog.Debugf(ctx, "client writer need_ack:%v", needAck)
+				ctxlog.Debugf(ctx, "client writer [need_ack:%v]", needAck)
 			}
 		case ev := <-client.writerExit:
 			if ev.cmd != kClientClose {
@@ -406,6 +403,14 @@ func (client *clientState) clientWriter(ctx context.Context) {
 			return
 		}
 	}
+}
+
+func (client *clientState) clientReaderExit(msg *protoMsg) {
+	client.readerExit <- *msg
+	client.mu.Lock()
+	client.exiting = true
+	client.cond.Broadcast()
+	client.mu.Unlock()
 }
 
 func (client *clientState) clientClose(ctx context.Context) {
@@ -500,17 +505,17 @@ func (r *remoteState) remoteReader(ctx context.Context) {
 				// FIXME: block on closed client?
 				client.writerInput <- protoMsg{cmd: ev.cmd, cid: ev.cid, data: ev.data}
 			case kClientClose:
-				msg := protoMsg{cmd: ev.cmd}
-				client.writerExit <- msg
-				client.readerExit <- msg
+				msg := &protoMsg{cmd: ev.cmd}
+				client.writerExit <- *msg
+				client.clientReaderExit(msg)
 			default:
 				ctxlog.Errorf(ctx, "[cid:%v] unknown [cmd:%v]", ev.cid, ev.cmd)
 			}
 		case ev := <-r.readerExit:
-			if ev.cmd != kLocalClose {
+			if ev.cmd != kRemoteClose {
 				panic("bad msg type")
 			}
-			ctxlog.Infof(ctx, "remote reader exit with kLocalClose")
+			ctxlog.Infof(ctx, "remote reader exit with kRemoteClose")
 			return
 		} // select
 	} // for
@@ -619,7 +624,7 @@ func (r *remoteState) remoteClose(ctx context.Context) {
 	// notify all client to quit
 	msg := protoMsg{cmd: kClientClose}
 	for _, client := range r.clientStates {
-		client.readerExit <- msg
+		client.clientReaderExit(&msg)
 		client.writerExit <- msg
 	}
 }

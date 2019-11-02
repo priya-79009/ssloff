@@ -32,8 +32,8 @@ type localState struct {
 	thead        *targetState
 	ttail        *targetState
 	writerNotify chan struct{}
-	writerExit chan protoMsg
-	writerDone chan struct{}
+	writerExit   chan protoMsg
+	writerDone   chan struct{}
 	// targets
 	mu           sync.Mutex
 	targetStates map[uint32]*targetState
@@ -66,10 +66,11 @@ type targetState struct {
 	writerExit  chan protoMsg
 	writerDone  chan struct{}
 	// local writer queue
-	mu    sync.Mutex
-	cond  sync.Cond
-	phead *protoMsg
-	ptail *protoMsg
+	mu      sync.Mutex
+	cond    sync.Cond
+	phead   *protoMsg
+	ptail   *protoMsg
+	exiting bool
 	// notified target queue, protected by localState.mu
 	tnext    *targetState
 	notified bool
@@ -209,8 +210,9 @@ func (l *localState) localReader(ctx context.Context) {
 					continue
 				}
 
-				t.writerExit <- protoMsg{cmd: ev.cmd}
-				t.readerExit <- protoMsg{cmd: ev.cmd}
+				msg := &protoMsg{cmd: ev.cmd}
+				t.targetReaderExit(msg)
+				t.writerExit <- *msg
 			default:
 				ctxlog.Errorf(ctx, "[cid:%v] unknown [cmd:%v]", ev.cid, ev.cmd)
 			}
@@ -218,7 +220,7 @@ func (l *localState) localReader(ctx context.Context) {
 			if ev.cmd != kLocalClose {
 				panic("bad msg type")
 			}
-			ctxlog.Infof(ctx, "local reader exit with kRemoteClose")
+			ctxlog.Infof(ctx, "local reader exit with kLocalClose")
 			return
 		} // select
 	} // for
@@ -311,7 +313,7 @@ func (l *localState) localWriter(ctx context.Context) {
 			if ev.cmd != kLocalClose {
 				panic("bad msg type")
 			}
-			ctxlog.Infof(ctx, "local writer exit with kRemoteClose")
+			ctxlog.Infof(ctx, "local writer exit with kLocalClose")
 			return
 		} // select
 	} // for
@@ -327,7 +329,7 @@ func (l *localState) localClose(ctx context.Context) {
 	// notify all target to quit
 	msg := protoMsg{cmd: kClientClose}
 	for _, t := range l.targetStates {
-		t.readerExit <- msg
+		t.targetReaderExit(&msg)
 		t.writerExit <- msg
 	}
 }
@@ -470,10 +472,6 @@ func (t *targetState) localWriterEnqueue(ctx context.Context, proto *protoMsg) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if proto.cmd == kRemoteInputDown && t.fc.state() == kFlowPause {
-		panic("???")
-	}
-
 	// enqueue
 	if t.phead == nil {
 		t.phead = proto
@@ -489,7 +487,7 @@ func (t *targetState) localWriterEnqueue(ctx context.Context, proto *protoMsg) {
 	t.localNotify(false)
 
 	// block on kFlowPause
-	for t.fc.state() == kFlowPause {
+	for t.fc.state() == kFlowPause && !t.exiting {
 		ctxlog.Debugf(ctx, "target paused [snt:%v][ack:%v] [inflight:%v] > [window:%v]",
 			t.fc.snt, t.fc.ack, t.fc.snt-t.fc.ack, t.fc.win)
 		t.cond.Wait()
@@ -596,7 +594,7 @@ func (t *targetState) targetWriter(ctx context.Context) {
 			if err != nil {
 				ctxlog.Errorf(ctx, "target writer exit with io error: %v", err)
 				msg := &protoMsg{cmd: kClientClose, cid: t.id}
-				t.readerExit <- *msg
+				t.targetReaderExit(msg)
 				t.localWriterEnqueue(ctx, msg)
 				return
 			}
@@ -633,6 +631,14 @@ func (t *targetState) targetWriter(ctx context.Context) {
 			return
 		} // select
 	} // for
+}
+
+func (t *targetState) targetReaderExit(msg *protoMsg) {
+	t.readerExit <- *msg
+	t.mu.Lock()
+	t.exiting = true
+	t.cond.Broadcast()
+	t.mu.Unlock()
 }
 
 func (t *targetState) targetClose(ctx context.Context) {
