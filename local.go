@@ -38,6 +38,16 @@ type clientState struct {
 	writerInput chan protoMsg
 	writerExit  chan protoMsg
 	writerDone  chan struct{}
+	// remote writer quene
+	mu    sync.Mutex
+	cond  sync.Cond
+	phead *protoMsg
+	ptail *protoMsg
+	// notified client queue, protected by remoteState.mu
+	cnext    *clientState
+	notified bool
+	// flow control
+	fc FlowCtrl
 }
 
 type remoteState struct {
@@ -50,9 +60,11 @@ type remoteState struct {
 	readerExit chan protoMsg
 	readerDone chan struct{}
 	// writer
-	writerInput chan protoMsg
-	writerExit  chan protoMsg
-	writerDone  chan struct{}
+	chead        *clientState
+	ctail        *clientState
+	writerNotify chan struct{}
+	writerExit   chan protoMsg
+	writerDone   chan struct{}
 }
 
 type Local struct {
@@ -188,16 +200,16 @@ func (l *Local) clientInitializer(ctx context.Context, conn net.Conn) {
 	if tlsConn != nil {
 		cmd = kClientInputConnectSSL
 	}
-	client.remote.writerInput <- protoMsg{
+	client.remoteWriterEnqueue(ctx, &protoMsg{
 		cmd: cmd, cid: client.id, data: serializeSocksAddr(dstAddr, dstPort),
-	}
+	})
 
 	// peeked data
 	if len(peekData) > 0 {
 		ctxlog.Debugf(ctx, "client reader got %v bytes from peekData", len(peekData))
-		client.remote.writerInput <- protoMsg{
+		client.remoteWriterEnqueue(ctx, &protoMsg{
 			cmd: kClientInputUp, cid: client.id, data: peekData,
-		}
+		})
 		client.metric.FirstRead = time.Now().UnixNano() / 1000
 		client.metric.BytesRead += len(peekData)
 	}
@@ -215,6 +227,75 @@ func (l *Local) clientInitializer(ctx context.Context, conn net.Conn) {
 	ctxlog.Infof(ctx, "client done")
 }
 
+func (client *clientState) clientUpdateAck(ack uint32) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+
+	if ack != client.fc.ack && ack-client.fc.ack < 1<<16 {
+		prevState := client.fc.state()
+		client.fc.ack = ack
+		if prevState == kFlowPause {
+			client.cond.Signal()
+		}
+	}
+}
+
+func (client *clientState) remoteWriterEnqueue(ctx context.Context, proto *protoMsg) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+
+	if proto.cmd == kClientInputUp && client.fc.state() == kFlowPause {
+		panic("???")
+	}
+
+	// enqueue
+	if client.phead == nil {
+		client.phead = proto
+	} else {
+		client.ptail.next = proto
+	}
+	client.ptail = proto
+
+	// update state
+	client.fc.snt += uint32(len(proto.data))
+
+	// notify remote writer
+	client.remoteNotify(false)
+
+	// block on kFlowPause
+	for client.fc.state() == kFlowPause {
+		ctxlog.Debugf(ctx, "client paused [snt:%v][ack:%v] [inflight:%v] > [window:%v]",
+			client.fc.snt, client.fc.ack, client.fc.snt-client.fc.ack, client.fc.win)
+		client.cond.Wait()
+	}
+}
+
+func (client *clientState) remoteNotify(nosig bool) {
+	r := client.remote
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if client.notified {
+		return
+	}
+
+	if r.chead == nil {
+		r.chead = client
+	} else {
+		r.ctail.cnext = client
+	}
+	r.ctail = client
+
+	client.notified = true
+
+	if !nosig {
+		select {
+		case r.writerNotify <- struct{}{}:
+		default:
+		}
+	}
+}
+
 func (client *clientState) clientReader(ctx context.Context) {
 	defer close(client.readerDone)
 
@@ -226,7 +307,7 @@ func (client *clientState) clientReader(ctx context.Context) {
 			// eof
 			if ev == nil {
 				ctxlog.Infof(ctx, "client reader exit with EOF")
-				client.remote.writerInput <- protoMsg{cmd: kClientInputUpEOF, cid: client.id}
+				client.remoteWriterEnqueue(ctx, &protoMsg{cmd: kClientInputUpEOF, cid: client.id})
 				return
 			}
 			// io error
@@ -234,7 +315,7 @@ func (client *clientState) clientReader(ctx context.Context) {
 				ctxlog.Errorf(ctx, "client reader exit with io error: %v", err)
 				msg := protoMsg{cmd: kClientClose, cid: client.id}
 				client.writerExit <- msg
-				client.remote.writerInput <- msg
+				client.remoteWriterEnqueue(ctx, &msg)
 				return
 			}
 
@@ -251,7 +332,8 @@ func (client *clientState) clientReader(ctx context.Context) {
 
 			// send data to remote
 			ctxlog.Debugf(ctx, "client reader got %v bytes", len(data))
-			client.remote.writerInput <- protoMsg{cmd: kClientInputUp, cid: client.id, data: data}
+			client.remoteWriterEnqueue(ctx,
+				&protoMsg{cmd: kClientInputUp, cid: client.id, data: data})
 		case ev := <-client.readerExit:
 			if ev.cmd != kClientClose {
 				panic("bad msg type")
@@ -290,13 +372,31 @@ func (client *clientState) clientWriter(ctx context.Context) {
 				ctxlog.Errorf(ctx, "client writer exit with io error: %v", err)
 				msg := protoMsg{cmd: kClientClose, cid: client.id}
 				client.readerExit <- msg
-				client.remote.writerInput <- msg
+				client.remoteWriterEnqueue(ctx, &msg)
 				return
 			}
 
 			if ev.cmd == kRemoteInputDownEOF {
 				ctxlog.Infof(ctx, "client writer exit with EOF")
 				return
+			}
+
+			if len(ev.data) > 0 {
+				needAck := false
+				client.mu.Lock()
+				// update client.rcv
+				client.fc.rcv += uint32(len(ev.data))
+				// send empty data packet to ack remote
+				if client.phead == nil {
+					// NOTE: can't call client.remoteWriterEnqueue() since we can't block on here
+					needAck = true
+					msg := &protoMsg{cmd: kClientInputUp, cid: client.id, data: nil}
+					client.phead = msg
+					client.ptail = msg
+					client.remoteNotify(false)
+				}
+				client.mu.Unlock()
+				ctxlog.Debugf(ctx, "client writer need_ack:%v", needAck)
 			}
 		case ev := <-client.writerExit:
 			if ev.cmd != kClientClose {
@@ -354,6 +454,9 @@ func (r *remoteState) clientNew(ctx context.Context) *clientState {
 		writerExit:  make(chan protoMsg, 4),
 		writerDone:  make(chan struct{}),
 	}
+	client.cond.L = &client.mu
+	// TODO: config
+	client.fc.win = 1024 * 1024
 	r.clientStates[r.clientIdSeq] = client
 
 	// next id
@@ -380,7 +483,8 @@ func (r *remoteState) remoteReader(ctx context.Context) {
 				r.writerExit <- protoMsg{cmd: kRemoteClose}
 				return
 			}
-			ctxlog.Debugf(ctx, "[cid:%v][cmd:%v][data_len:%v]", ev.cid, ev.cmd, len(ev.data))
+			ctxlog.Debugf(ctx, "[cid:%v][cmd:%v][ack:%v][data_len:%v]",
+				ev.cid, ev.cmd, ev.ack, len(ev.data))
 
 			client := r.clientGet(ev.cid)
 			if client == nil {
@@ -388,10 +492,12 @@ func (r *remoteState) remoteReader(ctx context.Context) {
 				continue
 			}
 
+			// update client.ack
+			client.clientUpdateAck(ev.ack)
+
 			switch ev.cmd {
 			case kRemoteInputDown, kRemoteInputDownEOF:
 				// FIXME: block on closed client?
-				// TODO: timeout or flow ctrl
 				client.writerInput <- protoMsg{cmd: ev.cmd, cid: ev.cid, data: ev.data}
 			case kClientClose:
 				msg := protoMsg{cmd: ev.cmd}
@@ -410,33 +516,88 @@ func (r *remoteState) remoteReader(ctx context.Context) {
 	} // for
 }
 
+func (r *remoteState) remoteNotifyDequeue(ctx context.Context) *clientState {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.ctail == nil {
+		return nil
+	}
+
+	client := r.chead
+	if client != nil {
+		client.notified = false
+		r.chead = client.cnext
+	}
+	if r.chead == nil {
+		r.ctail = nil
+	}
+	return client
+}
+
+func (r *remoteState) remoteNotifyConsume(ctx context.Context, client *clientState) error {
+	// dequeue one event
+	client.mu.Lock()
+	msg := client.phead
+	if msg != nil {
+		client.phead = msg.next
+		if client.phead == nil {
+			client.ptail = nil
+		}
+		// update ack to remote
+		msg.ack = client.fc.rcv
+	}
+	client.mu.Unlock()
+
+	if msg == nil {
+		ctxlog.Debugf(ctx, "[cid:%v] client wake up without event", client.id)
+		return nil
+	}
+
+	// check msg
+	switch msg.cmd {
+	case kClientClose, kClientInputConnect, kClientInputConnectSSL, kClientInputUpEOF:
+	case kClientInputUp:
+		if len(msg.data) > kMsgRecvMaxLen {
+			panic("ensure this")
+		}
+	default:
+		panic("bad msg type")
+	}
+
+	// do write io
+	if err := msg.writeTo(r.conn); err != nil {
+		return err
+	}
+
+	// requeue client if client has more event
+	client.mu.Lock()
+	if client.phead != nil {
+		client.remoteNotify(true)
+	}
+	client.mu.Unlock()
+
+	return nil
+}
+
 func (r *remoteState) remoteWriter(ctx context.Context) {
 	defer close(r.writerDone)
 
 	for {
 		select {
-		case ev := <-r.writerInput:
-			var msg protoMsg
-			switch ev.cmd {
-			case kClientClose:
-				msg = protoMsg{cmd: kClientClose, cid: ev.cid}
-			case kClientInputConnect, kClientInputConnectSSL:
-				msg = protoMsg{cmd: ev.cmd, cid: ev.cid, data: ev.data}
-			case kClientInputUp:
-				if len(ev.data) > kMsgRecvMaxLen {
-					panic("ensure this")
+		case <-r.writerNotify:
+			for {
+				client := r.remoteNotifyDequeue(ctx)
+				if client == nil {
+					ctxlog.Debugf(ctx, "remote writer has consumed all events")
+					break
 				}
-				msg = protoMsg{cmd: kClientInputUp, cid: ev.cid, data: ev.data}
-			case kClientInputUpEOF:
-				msg = protoMsg{cmd: kClientInputUpEOF, cid: ev.cid}
-			default:
-				panic("bad msg type")
-			}
 
-			if err := msg.writeTo(r.conn); err != nil {
-				ctxlog.Errorf(ctx, "remote write exit with io error: %v", err)
-				r.readerExit <- protoMsg{cmd: kRemoteClose}
-				return
+				if err := r.remoteNotifyConsume(ctx, client); err != nil {
+					ctxlog.Errorf(ctx, "remote writer exit with io error: %v", err)
+					r.readerExit <- protoMsg{cmd: kRemoteClose}
+					return
+				}
 			}
 		case ev := <-r.writerExit:
 			if ev.cmd != kRemoteClose {
@@ -493,7 +654,7 @@ func (l *Local) remoteInitializer(ctx context.Context) {
 		clientStates: map[uint32]*clientState{},
 		readerExit:   make(chan protoMsg, 4),
 		readerDone:   make(chan struct{}),
-		writerInput:  make(chan protoMsg, kChannelSize),
+		writerNotify: make(chan struct{}, 1),
 		writerExit:   make(chan protoMsg, 4),
 		writerDone:   make(chan struct{}),
 	}

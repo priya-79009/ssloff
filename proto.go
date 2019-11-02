@@ -16,6 +16,8 @@ type protoMsg struct {
 	data []byte
 	// only used by protoParser
 	err error
+	// used by remote writer quene
+	next *protoMsg
 }
 
 func (msg *protoMsg) writeTo(w io.Writer) error {
