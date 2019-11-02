@@ -32,7 +32,6 @@ type localState struct {
 	thead        *targetState
 	ttail        *targetState
 	writerNotify chan struct{}
-	//writerInput  chan protoMsg // xxx
 	writerExit chan protoMsg
 	writerDone chan struct{}
 	// targets
