@@ -18,9 +18,10 @@ type peerState struct {
 	readerExit chan struct{}
 	readerDone chan struct{}
 	// writer
-	llist        SList // *leafState
+	llist        SList // *leafState, notified leaves
 	writerExit   chan struct{}
 	writerNotify chan struct{}
+	elist        SList // *protoMsg, exiting protoMsg
 	writerDone   chan struct{}
 	// leaves
 	mu          sync.Mutex
@@ -82,7 +83,7 @@ func newLeaf() *leafState {
 	l := &leafState{
 		readerExit:  make(chan struct{}, 4),
 		readerDone:  make(chan struct{}, 4),
-		writerInput: make(chan *protoMsg, kChannelSize), // FIXME: possiblely smaller than window
+		writerInput: make(chan *protoMsg, 1024*1024), // FIXME: possiblely smaller than window
 		writerExit:  make(chan struct{}, 4),
 		writerDone:  make(chan struct{}, 4),
 	}
@@ -181,11 +182,17 @@ func (p *peerState) leafDequeue(ctx context.Context) *leafState {
 func (p *peerState) leafConsume(ctx context.Context, l *leafState) error {
 	var msg *protoMsg
 	l.mu.Lock()
+	exiting := l.exiting
 	if !l.plist.Empty() {
 		msg = l.plist.PopFront().Value.(*protoMsg)
 		msg.ack = l.fc.rcv
 	}
 	l.mu.Unlock()
+
+	if exiting {
+		ctxlog.Debugf(ctx, "[cid:%v] ignoring exiting leaf", l.id)
+		return nil
+	}
 
 	if msg == nil {
 		ctxlog.Debugf(ctx, "[cid:%v] leaf wake up without event", l.id)
@@ -244,26 +251,63 @@ func (p *peerState) peerWriter(ctx context.Context) {
 	for {
 		select {
 		case <-p.writerNotify:
-			eventCnt := 0
-			for {
-				l := p.leafDequeue(ctx)
-				if l == nil {
-					ctxlog.Debugf(ctx, "peer writer has consumed all %v events", eventCnt)
-					break
+			err := func() error {
+				// handle leaf exiting msg
+				for {
+					var msg *protoMsg
+					p.mu.Lock()
+					if !p.elist.Empty() {
+						msg = p.elist.PopFront().Value.(*protoMsg)
+					}
+					p.mu.Unlock()
+
+					if msg == nil {
+						break
+					}
+					// do write io
+					if err := msg.writeTo(p.conn); err != nil {
+						return err
+					}
 				}
 
-				eventCnt++
-				if err := p.leafConsume(ctx, l); err != nil {
-					ctxlog.Errorf(ctx, "peer writer exit with io error: %v", err)
-					p.peerExit()
-					return
+				// handle notified leaves
+				eventCnt := 0
+				for {
+					l := p.leafDequeue(ctx)
+					if l == nil {
+						ctxlog.Debugf(ctx, "peer writer has consumed all %v events", eventCnt)
+						break
+					}
+
+					eventCnt++
+					if err := p.leafConsume(ctx, l); err != nil {
+						return err
+					}
 				}
+
+				return nil
+			}()
+			if err != nil {
+				ctxlog.Errorf(ctx, "peer writer exit with io error: %v", err)
+				p.peerExit()
+				return
 			}
 		case <-p.writerExit:
 			ctxlog.Infof(ctx, "peer writer exit with p.writerExit")
 			return
 		} // select
 	} // for
+}
+
+func (p *peerState) leafExitingInput(msg *protoMsg) {
+	msg.plist.Value = msg
+	p.mu.Lock()
+	p.elist.PushBack(&msg.plist)
+	p.mu.Unlock()
+	select {
+	case p.writerNotify <- struct{}{}:
+	default:
+	}
 }
 
 func (p *peerState) peerClose(ctx context.Context) {
@@ -324,8 +368,8 @@ func (l *leafState) leafReader(ctx context.Context) {
 			// io error
 			if err, ok := ev.(error); ok {
 				ctxlog.Errorf(ctx, "leaf reader exit with error: %v", err)
-				l.peerWriterInput(ctx, &protoMsg{cmd: kCmdClose, cid: l.id})
 				l.leafExit()
+				l.peer.leafExitingInput(&protoMsg{cmd: kCmdClose, cid: l.id})
 				return
 			}
 
@@ -378,8 +422,8 @@ func (l *leafState) leafWriter(ctx context.Context) {
 
 			if err != nil {
 				ctxlog.Errorf(ctx, "leaf writer exit with io error: %v", err)
-				l.peerWriterInput(ctx, &protoMsg{cmd: kCmdClose, cid: l.id})
 				l.leafExit()
+				l.peer.leafExitingInput(&protoMsg{cmd: kCmdClose, cid: l.id})
 				return
 			}
 

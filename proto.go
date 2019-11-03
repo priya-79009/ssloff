@@ -71,7 +71,6 @@ func protoParser(reader io.Reader) (result chan *protoMsg, quit chan struct{}) {
 				ack:  binary.LittleEndian.Uint32(h[12:16]),
 				data: data,
 			}
-			msg.plist.Value = msg
 
 			select {
 			case result <- msg:

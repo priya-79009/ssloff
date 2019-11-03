@@ -99,8 +99,6 @@ func onConnect(remote *Remote, p *peerState,
 	if l == nil {
 		return
 	}
-
-	// start connecting
 	defer l.leafClose(ctx)
 
 	addr := socksAddrString(dstAddr, dstPort)
@@ -115,8 +113,7 @@ func onConnect(remote *Remote, p *peerState,
 	conn, err := dial(ctx, addr, remote.PreferIPv4)
 	if err != nil {
 		ctxlog.Errorf(ctx, "target dial: %v", err)
-		// FIXME: leaf will be destroyed soon
-		l.peerWriterInput(ctx, &protoMsg{cmd: kCmdClose, cid: l.id})
+		l.peer.leafExitingInput(&protoMsg{cmd: kCmdClose, cid: l.id})
 		return
 	}
 	l.metric.Connected = time.Now().UnixNano() / 1000
@@ -126,8 +123,7 @@ func onConnect(remote *Remote, p *peerState,
 	if cmd == kCmdConnectSSL {
 		if dstAddr.atype != kSocksAddrDomain {
 			ctxlog.Errorf(ctx, "[LOCAL_BUG] kCmdConnectSSL requires ServerName")
-			// FIXME: leaf will be destroyed soon
-			l.peerWriterInput(ctx, &protoMsg{cmd: kCmdClose, cid: l.id})
+			l.peer.leafExitingInput(&protoMsg{cmd: kCmdClose, cid: l.id})
 			return
 		}
 		conn = tls.Client(conn, &tls.Config{ServerName: string(dstAddr.addr)})

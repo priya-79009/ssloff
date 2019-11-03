@@ -17,12 +17,12 @@ type Local struct {
 	NoMITM     bool
 	MITM       *MITM
 	// *peerState
-	rstate atomic.Value
+	pstate atomic.Value
 }
 
 func (l *Local) Start(ctx context.Context) error {
 	// init atomic.Value
-	l.rstate.Store((*peerState)(nil))
+	l.pstate.Store((*peerState)(nil))
 
 	// listen for client
 	listener, err := net.Listen("tcp", l.LocalAddr)
@@ -62,7 +62,7 @@ func (l *Local) clientInitializer(ctx context.Context, conn net.Conn) {
 	ctxlog.Infof(ctx, "accepted")
 
 	// get remote state
-	p := l.rstate.Load().(*peerState)
+	p := l.pstate.Load().(*peerState)
 	if p == nil {
 		ctxlog.Errorf(ctx, "peer not ready")
 		return
@@ -122,6 +122,7 @@ func (l *Local) clientInitializer(ctx context.Context, conn net.Conn) {
 	if client == nil {
 		return
 	}
+	defer client.leafClose(ctx)
 
 	// log
 	ctx = ctxlog.Pushf(ctx, "[client][id:%v][target:%v:%v]", client.id, dstAddr, dstPort)
@@ -165,7 +166,6 @@ func (l *Local) clientInitializer(ctx context.Context, conn net.Conn) {
 	<-client.writerDone
 
 	// clear client state
-	client.leafClose(ctx)
 	ctxlog.Infof(ctx, "client done")
 }
 
@@ -228,13 +228,13 @@ func (l *Local) remoteInitializer(ctx context.Context) {
 	go p.peerWriter(ctx)
 
 	// store remote
-	l.rstate.Store(p)
+	l.pstate.Store(p)
 
 	// wait remote down
 	<-p.readerDone
 	<-p.writerDone
 
 	// clear remote state
-	l.rstate.Store((*peerState)(nil))
+	l.pstate.Store((*peerState)(nil))
 	p.peerClose(ctx)
 }
