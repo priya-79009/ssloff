@@ -1,6 +1,7 @@
 package ssloff
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"github.com/pkg/errors"
@@ -55,6 +56,26 @@ func serializeSocksAddr(sa socksAddr, port uint16) (buf []byte) {
 	buf[0] = sa.atype
 	copy(buf[len(buf)-2-len(sa.addr):len(buf)-2], sa.addr)
 	binary.BigEndian.PutUint16(buf[len(buf)-2:], port)
+	return
+}
+
+func socksAddrString(dstAddr socksAddr, dstPort uint16) string {
+	if isIPv6(dstAddr) {
+		return fmt.Sprintf("[%s]:%d", dstAddr, dstPort)
+	} else {
+		return fmt.Sprintf("%s:%d", dstAddr, dstPort)
+	}
+}
+
+func parseSocksAddrData(data []byte) (sa socksAddr, port uint16, err error) {
+	addrReader := bytes.NewReader(data)
+	sa, port, err = parseSocksAddr(addrReader)
+	if err != nil {
+		return
+	}
+	if addrReader.Len() != 0 {
+		err = fmt.Errorf("trailing bytes after parse addr: %v", data)
+	}
 	return
 }
 

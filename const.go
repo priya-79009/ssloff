@@ -2,17 +2,13 @@ package ssloff
 
 const kChannelSize = 1024 * 1024
 
-// msgType
+// cmd
 const (
-	kClientInputConnect    = 1
-	kClientInputUp         = 2
-	kClientInputUpEOF      = 3
-	kClientClose           = 4
-	kRemoteInputDown       = 5
-	kRemoteInputDownEOF    = 6
-	kRemoteClose           = 8
-	kLocalClose            = 9
-	kClientInputConnectSSL = 10
+	kCmdConnect    = 1
+	kCmdConnectSSL = 2
+	kCmdData       = 3
+	kCmdEOF        = 4
+	kCmdClose      = 5
 )
 
 const kMsgRecvMaxLen = 512 * 1024

@@ -1,9 +1,9 @@
 package ssloff
 
 type FlowCtrl struct {
-	ack uint32 // ack from remote
-	snt uint32 // sent to remote
-	rcv uint32 // sent to client
+	ack uint32 // ack from peer
+	snt uint32 // sent to peer
+	rcv uint32 // sent to leaf
 	win uint32 // flow control window
 }
 

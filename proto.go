@@ -16,8 +16,8 @@ type protoMsg struct {
 	data []byte
 	// only used by protoParser
 	err error
-	// used by remote writer quene
-	next *protoMsg
+	// quene
+	plist SLElement
 }
 
 func (msg *protoMsg) writeTo(w io.Writer) error {
@@ -39,8 +39,8 @@ func (msg *protoMsg) writeTo(w io.Writer) error {
 	return err
 }
 
-func protoParser(reader io.Reader) (result chan protoMsg, quit chan struct{}) {
-	result = make(chan protoMsg, kChannelSize)
+func protoParser(reader io.Reader) (result chan *protoMsg, quit chan struct{}) {
+	result = make(chan *protoMsg, kChannelSize)
 	quit = make(chan struct{})
 
 	go func() {
@@ -65,12 +65,13 @@ func protoParser(reader io.Reader) (result chan protoMsg, quit chan struct{}) {
 				break
 			}
 
-			msg := protoMsg{
+			msg := &protoMsg{
 				cmd:  binary.LittleEndian.Uint32(h[4:8]),
 				cid:  binary.LittleEndian.Uint32(h[8:12]),
 				ack:  binary.LittleEndian.Uint32(h[12:16]),
 				data: data,
 			}
+			msg.plist.Value = msg
 
 			select {
 			case result <- msg:
@@ -81,7 +82,7 @@ func protoParser(reader io.Reader) (result chan protoMsg, quit chan struct{}) {
 
 		// EOF or other error
 		select {
-		case result <- protoMsg{err: err}:
+		case result <- &protoMsg{err: err}:
 		case <-quit:
 		}
 	}()
