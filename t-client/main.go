@@ -38,7 +38,7 @@ func (rd *Reader) Close() error {
 	return nil
 }
 
-func reader(ctx context.Context, reader io.Reader, bps int) {
+func reader(ctx context.Context, reader io.Reader, bps int, step int) {
 	if bps == 0 {
 		return
 	}
@@ -46,9 +46,9 @@ func reader(ctx context.Context, reader io.Reader, bps int) {
 	ctxlog.Debugf(ctx, "start reading [bps:%v]", bps)
 	n := 0
 	start := time.Now()
-	buf := [100]byte{}
+	buf := make([]byte, step)
 	for {
-		nread, err := reader.Read(buf[:])
+		nread, err := reader.Read(buf)
 		if err != nil {
 			ctxlog.Warnf(ctx, "reader err: %v", err)
 			return
@@ -72,6 +72,7 @@ func main() {
 	socks := flag.String("socks", "", "socks5 proxy")
 	writeBPS := flag.Int("write", 0, "upload xxx bytes per second")
 	readBPS := flag.Int("read", 0, "download xxx bytes per second")
+	step := flag.Int("step", 100, "buffer sizes")
 	flag.Parse()
 
 	c := http.Client{}
@@ -101,6 +102,6 @@ func main() {
 	ctxlog.Infof(ctx, "request done")
 
 	defer resp.Body.Close()
-	reader(ctx, resp.Body, *readBPS)
+	reader(ctx, resp.Body, *readBPS, *step)
 	ctxlog.Infof(ctx, "response read")
 }

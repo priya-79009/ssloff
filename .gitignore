@@ -15,3 +15,6 @@
 
 # proj
 .idea
+*.log
+ca.pem
+_cache

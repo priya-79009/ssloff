@@ -27,7 +27,7 @@ func rateCtrl(start time.Time, n int, bps int) {
 	}
 }
 
-func reader(ctx context.Context, wg *sync.WaitGroup, reader io.Reader, bps int) {
+func reader(ctx context.Context, wg *sync.WaitGroup, reader io.Reader, bps int, step int) {
 	defer wg.Done()
 	if bps == 0 {
 		return
@@ -36,9 +36,9 @@ func reader(ctx context.Context, wg *sync.WaitGroup, reader io.Reader, bps int) 
 	ctxlog.Debugf(ctx, "start reading [bps:%v]", bps)
 	n := 0
 	start := time.Now()
-	buf := [100]byte{}
+	buf := make([]byte, step)
 	for {
-		nread, err := reader.Read(buf[:])
+		nread, err := reader.Read(buf)
 		if err != nil {
 			ctxlog.Warnf(ctx, "reader err: %v", err)
 			return
@@ -50,7 +50,7 @@ func reader(ctx context.Context, wg *sync.WaitGroup, reader io.Reader, bps int) 
 	}
 }
 
-func writer(ctx context.Context, wg *sync.WaitGroup, writer io.Writer, bps int) {
+func writer(ctx context.Context, wg *sync.WaitGroup, writer io.Writer, bps int, step int) {
 	defer wg.Done()
 	if bps == 0 {
 		return
@@ -59,9 +59,9 @@ func writer(ctx context.Context, wg *sync.WaitGroup, writer io.Writer, bps int) 
 	ctxlog.Debugf(ctx, "start writing [bps:%v]", bps)
 	n := 0
 	start := time.Now()
-	buf := [100]byte{}
+	buf := make([]byte, step)
 	for {
-		nwritten, err := writer.Write(buf[:])
+		nwritten, err := writer.Write(buf)
 		if err != nil {
 			ctxlog.Warnf(ctx, "writer err: %v", err)
 			return
@@ -79,11 +79,12 @@ func serve(res http.ResponseWriter, req *http.Request) {
 	q := req.URL.Query()
 	readBPS := atoi(q.Get("read_bps"), 0)
 	writeBPS := atoi(q.Get("write_bps"), 0)
+	step := atoi(q.Get("step"), 100)
 
 	wg := &sync.WaitGroup{}
 	wg.Add(2)
-	go reader(ctx, wg, req.Body, readBPS)
-	go writer(ctx, wg, res, writeBPS)
+	go reader(ctx, wg, req.Body, readBPS, step)
+	go writer(ctx, wg, res, writeBPS, step)
 	wg.Wait()
 }
 

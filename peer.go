@@ -244,13 +244,15 @@ func (p *peerState) peerWriter(ctx context.Context) {
 	for {
 		select {
 		case <-p.writerNotify:
+			eventCnt := 0
 			for {
 				l := p.leafDequeue(ctx)
 				if l == nil {
-					ctxlog.Debugf(ctx, "peer writer has consumed all events")
+					ctxlog.Debugf(ctx, "peer writer has consumed all %v events", eventCnt)
 					break
 				}
 
+				eventCnt++
 				if err := p.leafConsume(ctx, l); err != nil {
 					ctxlog.Errorf(ctx, "peer writer exit with io error: %v", err)
 					p.peerExit()
