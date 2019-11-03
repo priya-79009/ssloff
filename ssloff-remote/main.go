@@ -23,7 +23,16 @@ func main() {
 	flag.StringVar(&remote.RemoteAddr, "remote", "127.0.0.1:2180", "listen on this address")
 	flag.BoolVar(&remote.PreferIPv4, "4", false, "prefer ipv4")
 	debugServerPtr := flag.String("debug", "", "debug server addr")
+	logfile := flag.String("log", "", "log file")
 	flag.Parse()
+
+	if *logfile != "" {
+		f, err := os.OpenFile(*logfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+		if err == nil {
+			defer f.Close()
+			log.SetOutput(f)
+		}
+	}
 
 	if *debugServerPtr != "" {
 		_ = ssloff.StartDebugServer(ctx, *debugServerPtr)

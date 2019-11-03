@@ -28,7 +28,16 @@ func main() {
 	flag.StringVar(&local.MITM.CAPath, "ca", "ca.pem", "path to CA")
 	flag.StringVar(&local.MITM.CacheDir, "cert-dir", "", "path to cert cache")
 	debugServerPtr := flag.String("debug", "", "debug server addr")
+	logfile := flag.String("log", "", "log file")
 	flag.Parse()
+
+	if *logfile != "" {
+		f, err := os.OpenFile(*logfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+		if err == nil {
+			defer f.Close()
+			log.SetOutput(f)
+		}
+	}
 
 	if local.NoMITM {
 		local.MITM = nil
