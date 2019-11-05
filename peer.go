@@ -139,7 +139,7 @@ func (p *peerState) peerReader(ctx context.Context) {
 				}
 				// new leaf
 				if p.onConnect != nil {
-					go p.onConnect(ctx, ev.cid, ev.cmd, dstAddr, dstPort)
+					p.onConnect(ctx, ev.cid, ev.cmd, dstAddr, dstPort)
 				} else {
 					ctxlog.Warnf(ctx, "[REMOTE_BUG] got connect cmd from remote")
 				}

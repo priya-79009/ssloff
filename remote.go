@@ -53,7 +53,13 @@ func (r *Remote) localInitializer(ctx context.Context, conn net.Conn) {
 	p := newPeer()
 	p.conn = conn
 	p.onConnect = func(ctx context.Context, cid uint32, cmd uint32, addr socksAddr, port uint16) {
-		onConnect(r, p, ctx, cid, cmd, addr, port)
+		// create leaf synchronously
+		l := createTarget(ctx, p, cid)
+		if l == nil {
+			return
+		}
+		// connect to target asynchronously
+		go doConnect(r, l, ctx, cmd, addr, port)
 	}
 
 	// start io
@@ -92,15 +98,10 @@ func createTarget(ctx context.Context, p *peerState, cid uint32) *leafState {
 	return l
 }
 
-func onConnect(remote *Remote, p *peerState,
-	ctx context.Context, cid uint32, cmd uint32, dstAddr socksAddr, dstPort uint16) {
-	// create leaf
-	l := createTarget(ctx, p, cid)
-	if l == nil {
-		return
-	}
-	defer l.leafClose(ctx)
+func doConnect(remote *Remote, l *leafState,
+	ctx context.Context, cmd uint32, dstAddr socksAddr, dstPort uint16) {
 
+	defer l.leafClose(ctx)
 	addr := socksAddrString(dstAddr, dstPort)
 
 	// metric
