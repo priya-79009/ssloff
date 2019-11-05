@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"flag"
-	"github.com/account-login/ctxlog"
 	"github.com/account-login/ssloff"
+	"gopkg.in/account-login/ctxlog.v2"
 	"log"
 	"os"
 	"os/signal"

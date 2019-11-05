@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"github.com/account-login/ctxlog"
+	"gopkg.in/account-login/ctxlog.v2"
 	"io"
 	"log"
 	"net/http"

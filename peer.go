@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"github.com/account-login/ctxlog"
+	"gopkg.in/account-login/ctxlog.v2"
 	"io"
 	"net"
 	"sync"
@@ -81,9 +81,11 @@ func newPeer() *peerState {
 
 func newLeaf() *leafState {
 	l := &leafState{
-		readerExit:  make(chan struct{}, 4),
-		readerDone:  make(chan struct{}, 4),
-		writerInput: make(chan *protoMsg, 1024*1024), // FIXME: possiblely smaller than window
+		readerExit: make(chan struct{}, 4),
+		readerDone: make(chan struct{}, 4),
+		// FIXME: possiblely smaller than window
+		// FIXME: too much memory
+		writerInput: make(chan *protoMsg, 1024*1024),
 		writerExit:  make(chan struct{}, 4),
 		writerDone:  make(chan struct{}, 4),
 	}

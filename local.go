@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
-	"github.com/account-login/ctxlog"
+	"gopkg.in/account-login/ctxlog.v2"
 	"net"
 	"sync/atomic"
 	"time"

@@ -3,7 +3,7 @@ package ssloff
 import _ "net/http/pprof"
 import (
 	"context"
-	"github.com/account-login/ctxlog"
+	"gopkg.in/account-login/ctxlog.v2"
 	"io"
 	"net/http"
 )

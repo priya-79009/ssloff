@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"flag"
-	"github.com/account-login/ctxlog"
 	"golang.org/x/net/proxy"
+	"gopkg.in/account-login/ctxlog.v2"
 	"io"
 	"log"
 	"net"

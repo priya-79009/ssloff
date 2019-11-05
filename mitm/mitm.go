@@ -41,7 +41,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/account-login/ctxlog"
+	"gopkg.in/account-login/ctxlog.v2"
 )
 
 // MaxSerialNumber is the upper boundary that is used to create unique serial

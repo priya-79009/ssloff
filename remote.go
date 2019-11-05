@@ -3,7 +3,7 @@ package ssloff
 import (
 	"context"
 	"crypto/tls"
-	"github.com/account-login/ctxlog"
+	"gopkg.in/account-login/ctxlog.v2"
 	"net"
 	"strings"
 	"time"
